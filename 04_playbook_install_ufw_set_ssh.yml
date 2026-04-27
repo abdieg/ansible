@@ -1,0 +1,278 @@
+---
+- name: Configure UFW firewall with SSH rules
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    # UFW configuration
+    ufw_enabled: true
+    ssh_port: 64100
+    
+    # SSH access rules (with CIDR notation)
+    ssh_rules:
+      - { from: "100.0.0.0/8", to: "any", port: 64100, comment: "Tailscale network" }
+      - { from: "192.168.1.0/24", to: "any", port: 64100, comment: "Local network" }
+    
+    # Additional allow rules (optional)
+    additional_rules: []
+      # - { rule: "allow", from: "10.0.0.0/8", port: 80, proto: "tcp", comment: "HTTP from internal" }
+      # - { rule: "allow", from: "10.0.0.0/8", port: 443, proto: "tcp", comment: "HTTPS from internal" }
+    
+    # Default policies
+    default_incoming: "deny"
+    default_outgoing: "allow"
+    default_routed: "disabled"
+
+  pre_tasks:
+    - name: Verify system compatibility
+      assert:
+        that:
+          - ansible_os_family == "Debian"
+        fail_msg: "This playbook requires a Debian-based system"
+
+    - name: Check UFW installation status
+      stat:
+        path: /usr/sbin/ufw
+      register: ufw_binary
+
+    - name: Display pre-configuration information
+      debug:
+        msg: |
+          UFW Firewall Configuration:
+          ═══════════════════════════════════════════════════════════
+          System: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          Hostname: {{ ansible_hostname }}
+          SSH Port: {{ ssh_port }}
+          UFW Status: {{ 'Installed' if ufw_binary.stat.exists else 'Not installed' }}
+          
+          SSH Rules to be configured:
+          {% for rule in ssh_rules %}
+          - From {{ rule.from }} to {{ rule.to }} port {{ rule.port }} ({{ rule.comment }})
+          {% endfor %}
+          
+          Default Policies:
+          - Incoming: {{ default_incoming }}
+          - Outgoing: {{ default_outgoing }}
+          - Routed: {{ default_routed }}
+          ═══════════════════════════════════════════════════════════
+
+  tasks:
+    - name: Install UFW
+      block:
+        - name: Update apt cache
+          apt:
+            update_cache: yes
+            cache_valid_time: 3600
+
+        - name: Install UFW package
+          apt:
+            name: ufw
+            state: present
+          register: ufw_install
+
+        - name: UFW installation status
+          debug:
+            msg: "{{ '✓ UFW installed successfully' if ufw_install.changed else '✓ UFW already installed' }}"
+
+      rescue:
+        - name: Installation failed
+          fail:
+            msg: "Failed to install UFW. Please check your system and network connectivity"
+
+    - name: Configure UFW default policies
+      block:
+        - name: Set default incoming policy
+          ufw:
+            direction: incoming
+            policy: "{{ default_incoming }}"
+          register: incoming_policy
+
+        - name: Set default outgoing policy
+          ufw:
+            direction: outgoing
+            policy: "{{ default_outgoing }}"
+          register: outgoing_policy
+
+        - name: Set default routed policy
+          ufw:
+            direction: routed
+            policy: "{{ default_routed }}"
+          register: routed_policy
+
+        - name: Default policies configured
+          debug:
+            msg: |
+              Default policies set:
+              - Incoming: {{ default_incoming }} {{ '(changed)' if incoming_policy.changed else '' }}
+              - Outgoing: {{ default_outgoing }} {{ '(changed)' if outgoing_policy.changed else '' }}
+              - Routed: {{ default_routed }} {{ '(changed)' if routed_policy.changed else '' }}
+
+      rescue:
+        - name: Policy configuration failed
+          debug:
+            msg: "⚠ Failed to set default policies. Continuing with next tasks..."
+
+    - name: Configure SSH access rules
+      block:
+        - name: Allow SSH from specific networks
+          ufw:
+            rule: allow
+            src: "{{ item.from }}"
+            dest: "{{ item.to }}"
+            port: "{{ item.port }}"
+            proto: tcp
+            comment: "{{ item.comment }}"
+          loop: "{{ ssh_rules }}"
+          register: ssh_rules_result
+
+        - name: SSH rules configured
+          debug:
+            msg: |
+              SSH access rules configured:
+              {% for rule in ssh_rules %}
+              ✓ {{ rule.from }} → port {{ rule.port }} ({{ rule.comment }})
+              {% endfor %}
+
+      rescue:
+        - name: SSH rules configuration failed
+          fail:
+            msg: |
+              Failed to configure SSH rules.
+              ⚠ WARNING: SSH access may be blocked after enabling UFW!
+              Please verify your firewall rules before enabling.
+
+    - name: Configure additional rules (if any)
+      block:
+        - name: Apply additional firewall rules
+          ufw:
+            rule: "{{ item.rule }}"
+            src: "{{ item.from | default(omit) }}"
+            port: "{{ item.port }}"
+            proto: "{{ item.proto | default('tcp') }}"
+            comment: "{{ item.comment | default(omit) }}"
+          loop: "{{ additional_rules }}"
+          when: additional_rules | length > 0
+          register: additional_rules_result
+
+        - name: Additional rules status
+          debug:
+            msg: "✓ {{ additional_rules | length }} additional rule(s) configured"
+          when: additional_rules | length > 0
+
+      rescue:
+        - name: Additional rules failed
+          debug:
+            msg: "⚠ Some additional rules failed. Continuing with UFW enablement..."
+
+    - name: Enable UFW firewall
+      block:
+        - name: Enable UFW service at boot
+          systemd:
+            name: ufw
+            enabled: yes
+            state: started
+          register: ufw_service
+
+        - name: UFW service status
+          debug:
+            msg: "✓ UFW service {{ 'started' if ufw_service.changed else 'already running' }}"
+
+        - name: Enable firewall (UFW)
+          ufw:
+            state: enabled
+          register: firewall_enabled
+
+        - name: Firewall enablement status
+          debug:
+            msg: "{{ '✓ Firewall enabled successfully' if firewall_enabled.changed else '✓ Firewall already enabled' }}"
+
+      rescue:
+        - name: Firewall enablement failed
+          fail:
+            msg: |
+              Failed to enable UFW firewall!
+              This might block SSH access. 
+              Check the firewall rules before attempting to enable again.
+
+  handlers:
+    - name: Display firewall status
+      block:
+        - name: Get UFW status
+          command: ufw status verbose
+          register: ufw_status
+          changed_when: false
+
+        - name: Show firewall status
+          debug:
+            msg: |
+              UFW Firewall Status:
+              ═══════════════════════════════════════════════════════════
+              {{ ufw_status.stdout }}
+              ═══════════════════════════════════════════════════════════
+
+  post_tasks:
+    - name: Verify firewall is running
+      systemd:
+        name: ufw
+        state: started
+      check_mode: no
+      register: final_ufw_status
+
+    - name: Check SSH connectivity
+      block:
+        - name: Verify SSH rule exists
+          command: "ufw show added | grep -E '{{ ssh_port }}'"
+          register: ssh_rule_check
+          changed_when: false
+          failed_when: false
+
+        - name: SSH rule verification
+          debug:
+            msg: "{{ '✓ SSH rule verified' if ssh_rule_check.rc == 0 else '⚠ SSH rule not found - verify manually' }}"
+
+      rescue:
+        - name: Rule verification failed
+          debug:
+            msg: "⚠ Could not verify SSH rules. Please check manually with 'sudo ufw status verbose'"
+
+    - name: Display completion summary
+      debug:
+        msg: |
+          UFW Firewall Configuration Complete!
+          ═══════════════════════════════════════════════════════════
+          Status: {{ '✓ Enabled' if final_ufw_status.active else '⚠ Check status' }}
+          SSH Access: 
+          {% for rule in ssh_rules %}
+            - {{ rule.from }} → port {{ rule.port }}
+          {% endfor %}
+          
+          Useful Commands:
+          - sudo ufw status verbose     (check firewall status)
+          - sudo ufw show added         (list all rules)
+          - sudo ufw delete allow from <ip> to any port {{ ssh_port }} (remove rule)
+          - sudo ufw reload             (reload rules)
+          - sudo ufw reset              (reset to defaults)
+          
+          WARNING: Firewall is now ENABLED!
+          Make sure SSH rules are correct before leaving!
+          ═══════════════════════════════════════════════════════════
+      notify: Display firewall status
+
+    - name: Test SSH connectivity (optional)
+      block:
+        - name: Test local SSH connectivity
+          wait_for:
+            port: "{{ ssh_port }}"
+            timeout: 5
+          ignore_errors: yes
+          register: ssh_test
+
+        - name: SSH connectivity status
+          debug:
+            msg: "{{ '✓ SSH port is accessible' if ssh_test.state == 'started' else '⚠ SSH port test inconclusive' }}"
+
+      rescue:
+        - name: Connectivity test warning
+          debug:
+            msg: "ℹ SSH connectivity test skipped or inconclusive. Verify manually if needed."
