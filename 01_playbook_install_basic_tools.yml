@@ -1,0 +1,30 @@
+---
+- name: Install useful system tools and utilities
+  hosts: all
+  become: yes
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install packages
+      apt:
+        name:
+          - htop
+          - ncdu
+          - iftop
+          - net-tools
+          - nmap
+          - lsb-release
+          - curl
+          - wget
+          - zoxide
+          - fzf
+          - eza
+          - screen
+          - mc
+          - lf
+          - tmux
+          - git
+          - zsh
+        state: present

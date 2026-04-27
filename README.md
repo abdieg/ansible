@@ -41,4 +41,13 @@ With above, you can sdimply execute then `ansible all -m ping --ask-vault-pass`
 ansible all --list-hosts
 ```
 
+# How to use playbooks
+```bash
+nano this_is_the_playbook.yml
+```
+
+Execute
+```bash
+ansible-playbook --ask-become-pass this_is_the_playbook.yml
+```
 

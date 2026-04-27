@@ -1,0 +1,13 @@
+---
+- name: Set ZSH as default shell
+  hosts: all
+  vars_prompt:
+    - name: username
+      prompt: "Enter username to change shell for"
+      private: no
+  tasks:
+    - name: Set zsh as default shell
+      user:
+        name: "{{ username }}"
+        shell: /bin/zsh
+      become: yes
