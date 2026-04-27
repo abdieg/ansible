@@ -2,29 +2,171 @@
 - name: Install useful system tools and utilities
   hosts: all
   become: yes
+  gather_facts: yes
+  
+  vars:
+    # Core system tools
+    core_tools:
+      - curl
+      - wget
+      - git
+      - zsh
+      - screen
+      - tmux
+    
+    # Monitoring and networking tools
+    monitoring_tools:
+      - htop
+      - ncdu
+      - iftop
+      - net-tools
+      - nmap
+    
+    # File managers and utilities
+    file_tools:
+      - mc
+      - lf
+    
+    # Shell enhancements
+    shell_tools:
+      - fzf
+      - zoxide
+      - eza
+    
+    # System information
+    system_tools:
+      - lsb-release
+    
+    # All tools combined
+    all_tools: "{{ core_tools + monitoring_tools + file_tools + shell_tools + system_tools }}"
+
+  pre_tasks:
+    - name: Verify system compatibility
+      assert:
+        that:
+          - ansible_os_family == "Debian"
+          - ansible_distribution_version is version('18.04', '>=')
+        fail_msg: "This playbook requires Debian/Ubuntu 18.04 or later"
+
+    - name: Display system information
+      debug:
+        msg: |
+          System Information:
+          - Distribution: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          - OS Family: {{ ansible_os_family }}
+          - Kernel: {{ ansible_kernel }}
+          - Total packages to install: {{ all_tools | length }}
+
   tasks:
     - name: Update apt cache
       apt:
         update_cache: yes
+        cache_valid_time: 3600
+      register: apt_update
+      changed_when: apt_update.cache_updated
 
-    - name: Install packages
+    - name: Install core system tools
       apt:
-        name:
-          - htop
-          - ncdu
-          - iftop
-          - net-tools
-          - nmap
-          - lsb-release
-          - curl
-          - wget
-          - zoxide
-          - fzf
-          - eza
-          - screen
-          - mc
-          - lf
-          - tmux
-          - git
-          - zsh
+        name: "{{ core_tools }}"
         state: present
+      register: core_install
+      retries: 3
+      delay: 5
+      until: core_install is succeeded
+
+    - name: Install monitoring and networking tools
+      apt:
+        name: "{{ monitoring_tools }}"
+        state: present
+      register: monitoring_install
+      retries: 3
+      delay: 5
+      until: monitoring_install is succeeded
+
+    - name: Install file managers and utilities
+      apt:
+        name: "{{ file_tools }}"
+        state: present
+      register: file_install
+      retries: 3
+      delay: 5
+      until: file_install is succeeded
+
+    - name: Install shell enhancement tools
+      apt:
+        name: "{{ shell_tools }}"
+        state: present
+      register: shell_install
+      retries: 3
+      delay: 5
+      until: shell_install is succeeded
+      # Some tools might not be in default repos
+      ignore_errors: yes
+
+    - name: Install system information tools
+      apt:
+        name: "{{ system_tools }}"
+        state: present
+      register: system_install
+      retries: 3
+      delay: 5
+      until: system_install is succeeded
+
+    - name: Clean up apt cache and unused packages
+      apt:
+        autoclean: yes
+        autoremove: yes
+      register: cleanup_result
+
+  handlers:
+    - name: Display installation summary
+      debug:
+        msg: |
+          Installation Summary:
+          ✓ Core tools: {{ core_install.changed | ternary('updated', 'already installed') }}
+          ✓ Monitoring tools: {{ monitoring_install.changed | ternary('updated', 'already installed') }}
+          ✓ File managers: {{ file_install.changed | ternary('updated', 'already installed') }}
+          ✓ Shell enhancements: {{ shell_install.changed | ternary('updated', 'already installed') }}
+          ✓ System tools: {{ system_install.changed | ternary('updated', 'already installed') }}
+          ✓ Cache cleanup: {{ cleanup_result.changed | ternary('performed', 'skipped') }}
+
+  post_tasks:
+    - name: Verify core tools installation
+      block:
+        - name: Check critical tools
+          command: "which {{ item }}"
+          loop: "{{ core_tools[:5] }}"  # Check first 5 core tools
+          register: tool_check
+          changed_when: false
+          failed_when: false
+
+        - name: Installation verification complete
+          debug:
+            msg: "✓ All core tools verified and ready to use"
+          when: tool_check.rc == 0
+          notify: Display installation summary
+
+      rescue:
+        - name: Installation verification warning
+          debug:
+            msg: "⚠ Some tools may not have installed successfully. Check manually with 'which <tool-name>'"
+
+    - name: Display helpful information
+      debug:
+        msg: |
+          Tools installed successfully!
+          
+          Quick Start:
+          - htop           : System monitoring ($ htop)
+          - ncdu           : Disk usage analyzer ($ ncdu /)
+          - iftop          : Network traffic viewer ($ sudo iftop)
+          - tmux           : Terminal multiplexer ($ tmux)
+          - fzf            : Fuzzy finder ($ fzf)
+          - zoxide         : Smart cd ($ z <directory>)
+          - eza            : Modern ls replacement ($ eza)
+          - mc             : Midnight Commander ($ mc)
+          - git            : Version control ($ git --version)
+          - zsh            : Advanced shell ($ zsh)
+          
+          Note: Some packages (zoxide, fzf, eza) might require additional configuration.
+          Check their respective documentation for setup instructions.

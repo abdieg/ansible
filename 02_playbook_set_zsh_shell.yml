@@ -1,13 +1,212 @@
 ---
 - name: Set ZSH as default shell
   hosts: all
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    zsh_shell_path: /bin/zsh
+    valid_shells:
+      - /bin/zsh
+      - /bin/bash
+      - /bin/sh
+  
   vars_prompt:
     - name: username
       prompt: "Enter username to change shell for"
       private: no
+      confirm: yes
+
+  pre_tasks:
+    - name: Verify system compatibility
+      assert:
+        that:
+          - ansible_os_family == "Debian"
+        fail_msg: "This playbook requires a Debian-based system"
+
+    - name: Check if user exists
+      getent:
+        database: passwd
+        key: "{{ username }}"
+        fail_key: false
+      register: user_exists
+
+    - name: Validate user existence
+      assert:
+        that:
+          - user_exists.ansible_facts.getent_passwd[username] is defined
+        fail_msg: "User '{{ username }}' does not exist on this system"
+
+    - name: Check if ZSH is installed
+      stat:
+        path: "{{ zsh_shell_path }}"
+      register: zsh_binary
+
+    - name: Install ZSH if not present
+      apt:
+        name: zsh
+        state: present
+        update_cache: yes
+      when: not zsh_binary.stat.exists
+      register: zsh_install
+
+    - name: Verify ZSH installation
+      stat:
+        path: "{{ zsh_shell_path }}"
+      register: zsh_binary_verify
+      failed_when: not zsh_binary_verify.stat.exists
+
+    - name: Display pre-change information
+      debug:
+        msg: |
+          Configuration Summary:
+          - System: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          - Target User: {{ username }}
+          - New Shell: {{ zsh_shell_path }}
+          - ZSH Status: {{ 'Installed (fresh)' if zsh_install.changed else 'Already installed' }}
+
   tasks:
-    - name: Set zsh as default shell
-      user:
-        name: "{{ username }}"
-        shell: /bin/zsh
-      become: yes
+    - name: Set ZSH as default shell
+      block:
+        - name: Change default shell to ZSH
+          user:
+            name: "{{ username }}"
+            shell: "{{ zsh_shell_path }}"
+            state: present
+          register: shell_change
+
+        - name: Shell change successful
+          debug:
+            msg: "✓ Successfully set ZSH as default shell for user '{{ username }}'"
+          when: shell_change.changed
+
+        - name: Shell already configured
+          debug:
+            msg: "ℹ User '{{ username }}' already uses ZSH as default shell"
+          when: not shell_change.changed
+
+      rescue:
+        - name: Shell change failed
+          debug:
+            msg: "✗ Failed to change default shell for user '{{ username }}'"
+
+        - name: Fail playbook on shell change error
+          fail:
+            msg: |
+              Unable to set default shell for user '{{ username }}'
+              Please verify:
+              1. User exists
+              2. You have proper permissions
+              3. The system allows shell changes
+
+    - name: Verify shell change
+      block:
+        - name: Check current shell in passwd file
+          command: "getent passwd {{ username }}"
+          register: passwd_output
+          changed_when: false
+
+        - name: Extract shell from passwd entry
+          set_fact:
+            current_shell: "{{ passwd_output.stdout.split(':')[-1] }}"
+            cacheable: yes
+
+        - name: Verify shell was changed correctly
+          assert:
+            that:
+              - current_shell == zsh_shell_path
+            fail_msg: "Shell verification failed. Expected {{ zsh_shell_path }}, got {{ current_shell }}"
+
+        - name: Shell verification successful
+          debug:
+            msg: "✓ Verified: {{ username }}'s default shell is now {{ current_shell }}"
+
+      rescue:
+        - name: Verification failed warning
+          debug:
+            msg: "⚠ Could not verify shell change. Manual verification recommended."
+
+  handlers:
+    - name: Display setup instructions
+      debug:
+        msg: |
+          ZSH Configuration Complete!
+          
+          Next Steps for User '{{ username }}':
+          1. Close and reopen terminal or SSH session
+          2. Run: zsh --version (to verify ZSH is active)
+          3. Configure ZSH:
+             - Default config: ~/.zshrc
+             - Install Oh My Zsh (optional): sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+          
+          Useful ZSH features:
+          - Tab completion: Press TAB twice for menu
+          - History search: Ctrl+R (search backwards)
+          - Directory aliases: cd - (previous dir)
+          - Globbing: ls *.txt (advanced patterns)
+
+  post_tasks:
+    - name: Get user information
+      getent:
+        database: passwd
+        key: "{{ username }}"
+      register: user_info
+
+    - name: Display final summary
+      debug:
+        msg: |
+          Summary:
+          ═══════════════════════════════════════════════════════════
+          User: {{ username }}
+          Home Directory: {{ user_info.ansible_facts.getent_passwd[username][4] }}
+          Default Shell: {{ current_shell }}
+          Shell Change Time: {{ ansible_date_time.iso8601 }}
+          ═══════════════════════════════════════════════════════════
+      notify: Display setup instructions
+
+    - name: Optional: Create initial ZSH config if missing
+      block:
+        - name: Check if .zshrc exists
+          stat:
+            path: "{{ user_info.ansible_facts.getent_passwd[username][4] }}/.zshrc"
+          register: zshrc_file
+
+        - name: Create basic .zshrc if not present
+          copy:
+            dest: "{{ user_info.ansible_facts.getent_passwd[username][4] }}/.zshrc"
+            content: |
+              # Basic ZSH configuration
+              # Generated by Ansible on {{ ansible_date_time.iso8601 }}
+              
+              # Enable command completion
+              autoload -U compinit && compinit
+              
+              # History settings
+              HISTSIZE=10000
+              SAVEHIST=10000
+              HISTFILE=~/.zsh_history
+              
+              # Command history
+              setopt SHARE_HISTORY
+              setopt HIST_IGNORE_DUPS
+              
+              # Prompt
+              PROMPT='%n@%m:%~$ '
+              
+              # Aliases (add your custom aliases here)
+              alias ll='ls -la'
+              alias la='ls -A'
+              alias l='ls -CF'
+            owner: "{{ username }}"
+            group: "{{ username }}"
+            mode: '0644'
+          when: not zshrc_file.stat.exists
+
+        - name: Initial config status
+          debug:
+            msg: "{{ '.zshrc created successfully' if not zshrc_file.stat.exists else '.zshrc already exists, skipping creation' }}"
+
+      rescue:
+        - name: Config creation warning
+          debug:
+            msg: "⚠ Could not create .zshrc file. User may need to create it manually."

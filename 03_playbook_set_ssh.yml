@@ -2,23 +2,80 @@
 - name: Configure hardened SSH (sshd_config)
   hosts: all
   become: yes
-  tasks:
-    - name: Update apt cache
-      apt:
-        update_cache: yes
+  gather_facts: yes
+  
+  pre_tasks:
+    - name: Check if running on Debian-based system
+      assert:
+        that:
+          - ansible_os_family == "Debian"
+        fail_msg: "This playbook is designed for Debian-based systems"
 
-    - name: Ensure openssh-server is installed
+  tasks:
+    - name: Install openssh-server
       apt:
         name: openssh-server
         state: present
+        update_cache: yes
 
     - name: Create backup of original sshd_config
       copy:
         src: /etc/ssh/sshd_config
-        dest: /etc/ssh/sshd_config.bak
+        dest: /etc/ssh/sshd_config.bak.{{ ansible_date_time.iso8601_basic_short }}
         remote_src: yes
+        owner: root
+        group: root
+        mode: '0600'
 
-    - name: Configure hardened sshd_config
+    - name: Remove any conflicting commented lines in sshd_config
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?{{ item.key }}\\s"
+        state: absent
+      loop:
+        - { key: "Port" }
+        - { key: "AddressFamily" }
+        - { key: "ListenAddress" }
+        - { key: "SyslogFacility" }
+        - { key: "LogLevel" }
+        - { key: "LoginGraceTime" }
+        - { key: "StrictModes" }
+        - { key: "MaxAuthTries" }
+        - { key: "MaxSessions" }
+        - { key: "PermitRootLogin" }
+        - { key: "PubkeyAuthentication" }
+        - { key: "PasswordAuthentication" }
+        - { key: "PermitEmptyPasswords" }
+        - { key: "KbdInteractiveAuthentication" }
+        - { key: "ChallengeResponseAuthentication" }
+        - { key: "KerberosAuthentication" }
+        - { key: "KerberosOrLocalPasswd" }
+        - { key: "KerberosTicketCleanup" }
+        - { key: "GSSAPIAuthentication" }
+        - { key: "GSSAPICleanupCredentials" }
+        - { key: "IgnoreRhosts" }
+        - { key: "IgnoreUserKnownHosts" }
+        - { key: "HostbasedAuthentication" }
+        - { key: "PermitUserEnvironment" }
+        - { key: "UsePAM" }
+        - { key: "AllowTcpForwarding" }
+        - { key: "AllowAgentForwarding" }
+        - { key: "GatewayPorts" }
+        - { key: "PermitTunnel" }
+        - { key: "X11Forwarding" }
+        - { key: "X11UseLocalhost" }
+        - { key: "TCPKeepAlive" }
+        - { key: "ClientAliveInterval" }
+        - { key: "ClientAliveCountMax" }
+        - { key: "MaxStartups" }
+        - { key: "PrintMotd" }
+        - { key: "PrintLastLog" }
+        - { key: "Banner" }
+        - { key: "DebianBanner" }
+        - { key: "AcceptEnv" }
+        - { key: "Subsystem" }
+
+    - name: Configure hardened sshd settings
       lineinfile:
         path: /etc/ssh/sshd_config
         regexp: "^#?{{ item.key }}\\s"
@@ -86,13 +143,10 @@
         
         # Locale
         - { key: "AcceptEnv", value: "LANG LC_*" }
-
-    - name: Configure Subsystem (sftp)
-      lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: "^#?Subsystem\\s"
-        line: "Subsystem sftp /usr/lib/openssh/sftp-server"
-        state: present
+        
+        # Subsystem
+        - { key: "Subsystem", value: "sftp /usr/lib/openssh/sftp-server" }
+      notify: Restart SSH service
 
     - name: Set permissions on /etc/ssh directory
       file:
@@ -109,28 +163,53 @@
         group: root
 
     - name: Validate sshd_config syntax
-      command: sshd -t
-      register: sshd_validation
-      failed_when: sshd_validation.rc != 0
+      block:
+        - name: Test sshd configuration
+          command: sshd -t
+          register: sshd_validation
+          changed_when: false
 
-    - name: Show sshd validation result
-      debug:
-        msg: "sshd configuration is valid"
-      when: sshd_validation.rc == 0
+        - name: Configuration is valid
+          debug:
+            msg: "✓ SSH configuration is valid and ready to apply"
 
+      rescue:
+        - name: Configuration validation failed
+          debug:
+            msg: "✗ SSH configuration has errors. Rolling back..."
+
+        - name: Restore backup configuration
+          copy:
+            src: /etc/ssh/sshd_config.bak.{{ ansible_date_time.iso8601_basic_short }}
+            dest: /etc/ssh/sshd_config
+            remote_src: yes
+            owner: root
+            group: root
+            mode: '0600'
+
+        - name: Fail the playbook
+          fail:
+            msg: "SSH configuration validation failed. Original config restored. Check /etc/ssh/sshd_config.bak for details"
+
+  handlers:
     - name: Restart SSH service
-      service:
+      systemd:
         name: ssh
         state: restarted
         enabled: yes
+      listen: Restart SSH service
 
+  post_tasks:
     - name: Verify SSH service is running
-      service:
+      systemd:
         name: ssh
         state: started
-      register: ssh_service
-      failed_when: ssh_service.changed == False
+      register: ssh_status
 
-    - name: Show configuration completed
+    - name: Display completion message
       debug:
-        msg: "SSH hardening completed successfully. SSH is running on port 64100"
+        msg: |
+          ✓ SSH hardening completed successfully
+          ✓ SSH is running on port 64100
+          ✓ Configuration backed up to: /etc/ssh/sshd_config.bak.{{ ansible_date_time.iso8601_basic_short }}
+          ⚠ Update your ansible inventory to use port 64100 for future connections

@@ -2,11 +2,48 @@
 - name: Update and upgrade system packages
   hosts: all
   become: yes
+  gather_facts: yes
+  
+  pre_tasks:
+    - name: Check if running on Debian-based system
+      assert:
+        that:
+          - ansible_os_family == "Debian"
+        fail_msg: "This playbook is designed for Debian-based systems"
+      
   tasks:
     - name: Update apt cache
       apt:
         update_cache: yes
+        cache_valid_time: 3600
+      register: apt_update
 
     - name: Upgrade all packages
       apt:
         upgrade: dist
+        autoclean: yes
+        autoremove: yes
+      register: apt_upgrade
+      notify: Show upgrade summary
+
+  handlers:
+    - name: Show upgrade summary
+      debug:
+        msg: |
+          Upgrade completed successfully
+          Packages changed: {{ apt_upgrade.changed }}
+          {% if apt_upgrade.stdout_lines is defined %}
+          Upgraded packages:
+          {{ apt_upgrade.stdout_lines | join('\n') }}
+          {% endif %}
+
+  post_tasks:
+    - name: Check if reboot is required
+      stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+
+    - name: Notify if reboot is needed
+      debug:
+        msg: "⚠ System reboot is required. Run: sudo reboot"
+      when: reboot_required.stat.exists
