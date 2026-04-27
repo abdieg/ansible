@@ -1,0 +1,136 @@
+---
+- name: Configure hardened SSH (sshd_config)
+  hosts: all
+  become: yes
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Ensure openssh-server is installed
+      apt:
+        name: openssh-server
+        state: present
+
+    - name: Create backup of original sshd_config
+      copy:
+        src: /etc/ssh/sshd_config
+        dest: /etc/ssh/sshd_config.bak
+        remote_src: yes
+
+    - name: Configure hardened sshd_config
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?{{ item.key }}\\s"
+        line: "{{ item.key }} {{ item.value }}"
+        state: present
+      loop:
+        # Network & Connectivity
+        - { key: "Port", value: "64100" }
+        - { key: "AddressFamily", value: "inet" }
+        - { key: "ListenAddress", value: "0.0.0.0" }
+        
+        # Logging
+        - { key: "SyslogFacility", value: "AUTH" }
+        - { key: "LogLevel", value: "VERBOSE" }
+        
+        # Authentication
+        - { key: "LoginGraceTime", value: "30s" }
+        - { key: "StrictModes", value: "yes" }
+        - { key: "MaxAuthTries", value: "2" }
+        - { key: "MaxSessions", value: "5" }
+        - { key: "PermitRootLogin", value: "no" }
+        - { key: "PubkeyAuthentication", value: "no" }
+        - { key: "PasswordAuthentication", value: "yes" }
+        - { key: "PermitEmptyPasswords", value: "no" }
+        - { key: "KbdInteractiveAuthentication", value: "no" }
+        - { key: "ChallengeResponseAuthentication", value: "no" }
+        
+        # Kerberos
+        - { key: "KerberosAuthentication", value: "no" }
+        - { key: "KerberosOrLocalPasswd", value: "no" }
+        - { key: "KerberosTicketCleanup", value: "yes" }
+        
+        # GSSAPI
+        - { key: "GSSAPIAuthentication", value: "no" }
+        - { key: "GSSAPICleanupCredentials", value: "yes" }
+        
+        # Rhosts & Host-based
+        - { key: "IgnoreRhosts", value: "yes" }
+        - { key: "IgnoreUserKnownHosts", value: "yes" }
+        - { key: "HostbasedAuthentication", value: "no" }
+        
+        # Environment & Privilege
+        - { key: "PermitUserEnvironment", value: "no" }
+        - { key: "UsePAM", value: "yes" }
+        
+        # Forwarding & Tunnels
+        - { key: "AllowTcpForwarding", value: "no" }
+        - { key: "AllowAgentForwarding", value: "no" }
+        - { key: "GatewayPorts", value: "no" }
+        - { key: "PermitTunnel", value: "no" }
+        - { key: "X11Forwarding", value: "no" }
+        - { key: "X11UseLocalhost", value: "yes" }
+        
+        # Session & Keepalive
+        - { key: "TCPKeepAlive", value: "no" }
+        - { key: "ClientAliveInterval", value: "300" }
+        - { key: "ClientAliveCountMax", value: "3" }
+        - { key: "MaxStartups", value: "10:30:60" }
+        
+        # Display
+        - { key: "PrintMotd", value: "no" }
+        - { key: "PrintLastLog", value: "no" }
+        - { key: "Banner", value: "none" }
+        - { key: "DebianBanner", value: "no" }
+        
+        # Locale
+        - { key: "AcceptEnv", value: "LANG LC_*" }
+
+    - name: Configure Subsystem (sftp)
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?Subsystem\\s"
+        line: "Subsystem sftp /usr/lib/openssh/sftp-server"
+        state: present
+
+    - name: Set permissions on /etc/ssh directory
+      file:
+        path: /etc/ssh
+        mode: '0755'
+        owner: root
+        group: root
+
+    - name: Set permissions on sshd_config file
+      file:
+        path: /etc/ssh/sshd_config
+        mode: '0600'
+        owner: root
+        group: root
+
+    - name: Validate sshd_config syntax
+      command: sshd -t
+      register: sshd_validation
+      failed_when: sshd_validation.rc != 0
+
+    - name: Show sshd validation result
+      debug:
+        msg: "sshd configuration is valid"
+      when: sshd_validation.rc == 0
+
+    - name: Restart SSH service
+      service:
+        name: ssh
+        state: restarted
+        enabled: yes
+
+    - name: Verify SSH service is running
+      service:
+        name: ssh
+        state: started
+      register: ssh_service
+      failed_when: ssh_service.changed == False
+
+    - name: Show configuration completed
+      debug:
+        msg: "SSH hardening completed successfully. SSH is running on port 64100"
