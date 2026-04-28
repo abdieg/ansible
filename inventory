@@ -1,2 +1,2 @@
 [all]
-192.168.1.80 ansible_port=64100 ansible_user=diego
+192.168.1.100 ansible_port=64100 ansible_user=diego
