@@ -22,14 +22,15 @@
     # Default policies
     default_incoming: "deny"
     default_outgoing: "allow"
-    default_routed: "disabled"
+    default_routed: "deny"  # Changed from "disabled" - must be allow, deny, or reject
 
   pre_tasks:
     - name: Verify system compatibility
       assert:
         that:
-          - ansible_os_family == "Debian"
-        fail_msg: "This playbook requires a Debian-based system"
+          - ansible_distribution == "Debian"
+          - ansible_distribution_version is version('13', '>=')
+        fail_msg: "This playbook requires Debian 13 or later"
 
     - name: Check UFW installation status
       stat:
@@ -70,6 +71,9 @@
             name: ufw
             state: present
           register: ufw_install
+          retries: 3
+          delay: 5
+          until: ufw_install is succeeded
 
         - name: UFW installation status
           debug:
@@ -219,6 +223,12 @@
       check_mode: no
       register: final_ufw_status
 
+    - name: Get UFW service status for display
+      command: systemctl is-active ufw
+      register: ufw_active_check
+      changed_when: false
+      failed_when: false
+
     - name: Check SSH connectivity
       block:
         - name: Verify SSH rule exists
@@ -241,7 +251,7 @@
         msg: |
           UFW Firewall Configuration Complete!
           ═══════════════════════════════════════════════════════════
-          Status: {{ '✓ Enabled' if final_ufw_status.active else '⚠ Check status' }}
+          Status: {{ '✓ Active' if ufw_active_check.stdout == 'active' else '⚠ Check status manually' }}
           SSH Access: 
           {% for rule in ssh_rules %}
             - {{ rule.from }} → port {{ rule.port }}

@@ -1,0 +1,249 @@
+---
+- name: Install and configure Cockpit web console
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    # Cockpit configuration
+    cockpit_port: 9090
+    
+    # Cockpit access rules (same networks as SSH)
+    cockpit_rules:
+      - { from: "100.0.0.0/8", port: 9090, comment: "Cockpit - Tailscale network" }
+      - { from: "192.168.1.0/24", port: 9090, comment: "Cockpit - Local network" }
+
+  pre_tasks:
+    - name: Verify system compatibility
+      assert:
+        that:
+          - ansible_distribution == "Debian"
+          - ansible_distribution_version is version('13', '>=')
+        fail_msg: "This playbook requires Debian 13 or later"
+
+    - name: Display pre-installation information
+      debug:
+        msg: |
+          Cockpit Installation Configuration:
+          ═══════════════════════════════════════════════════════════
+          System: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          Hostname: {{ ansible_hostname }}
+          Cockpit Port: {{ cockpit_port }}
+          
+          Firewall Rules to be configured:
+          {% for rule in cockpit_rules %}
+          - From {{ rule.from }} port {{ rule.port }} ({{ rule.comment }})
+          {% endfor %}
+          
+          After installation, access Cockpit at:
+          https://{{ ansible_default_ipv4.address }}:{{ cockpit_port }}
+          ═══════════════════════════════════════════════════════════
+
+  tasks:
+    - name: Install Cockpit
+      block:
+        - name: Update apt cache
+          apt:
+            update_cache: yes
+            cache_valid_time: 3600
+
+        - name: Install Cockpit packages
+          apt:
+            name:
+              - cockpit
+              - cockpit-pcp  # Performance metrics
+            state: present
+          register: cockpit_install
+          retries: 3
+          delay: 5
+          until: cockpit_install is succeeded
+
+        - name: Cockpit installation status
+          debug:
+            msg: "{{ '✓ Cockpit installed successfully' if cockpit_install.changed else '✓ Cockpit already installed' }}"
+
+      rescue:
+        - name: Installation failed
+          fail:
+            msg: "Failed to install Cockpit. Please check your system and network connectivity"
+
+    - name: Enable and start Cockpit service
+      block:
+        - name: Enable Cockpit socket
+          systemd:
+            name: cockpit.socket
+            enabled: yes
+            state: started
+          register: cockpit_service
+
+        - name: Cockpit service status
+          debug:
+            msg: "✓ Cockpit service {{ 'started' if cockpit_service.changed else 'already running' }}"
+
+        - name: Verify Cockpit is listening
+          wait_for:
+            port: "{{ cockpit_port }}"
+            timeout: 10
+          register: cockpit_port_check
+
+        - name: Port verification status
+          debug:
+            msg: "✓ Cockpit is listening on port {{ cockpit_port }}"
+
+      rescue:
+        - name: Service enablement failed
+          fail:
+            msg: "Failed to enable or start Cockpit service"
+
+    - name: Configure UFW firewall rules for Cockpit
+      block:
+        - name: Check if UFW is installed
+          stat:
+            path: /usr/sbin/ufw
+          register: ufw_installed
+
+        - name: Check if UFW is active
+          command: ufw status
+          register: ufw_status
+          changed_when: false
+          failed_when: false
+          when: ufw_installed.stat.exists
+
+        - name: Add Cockpit UFW rules
+          ufw:
+            rule: allow
+            src: "{{ item.from }}"
+            port: "{{ item.port }}"
+            proto: tcp
+            comment: "{{ item.comment }}"
+          loop: "{{ cockpit_rules }}"
+          when: 
+            - ufw_installed.stat.exists
+            - "'Status: active' in ufw_status.stdout"
+          register: ufw_rules_result
+
+        - name: UFW rules status
+          debug:
+            msg: |
+              {% if ufw_installed.stat.exists and 'Status: active' in ufw_status.stdout %}
+              ✓ UFW firewall rules configured:
+              {% for rule in cockpit_rules %}
+              - {{ rule.from }} → port {{ rule.port }} ({{ rule.comment }})
+              {% endfor %}
+              {% elif ufw_installed.stat.exists %}
+              ℹ UFW is installed but not active. Rules added but not enforced.
+              {% else %}
+              ℹ UFW not installed. Firewall rules skipped.
+              {% endif %}
+
+      rescue:
+        - name: Firewall configuration failed
+          debug:
+            msg: "⚠ Failed to configure UFW rules. Cockpit is running but may not be accessible remotely."
+
+  handlers:
+    - name: Display Cockpit status
+      block:
+        - name: Get Cockpit socket status
+          command: systemctl status cockpit.socket --no-pager
+          register: cockpit_status_output
+          changed_when: false
+          failed_when: false
+
+        - name: Show Cockpit status
+          debug:
+            msg: |
+              Cockpit Service Status:
+              ═══════════════════════════════════════════════════════════
+              {{ cockpit_status_output.stdout }}
+              ═══════════════════════════════════════════════════════════
+
+  post_tasks:
+    - name: Verify Cockpit socket is active
+      systemd:
+        name: cockpit.socket
+        state: started
+      check_mode: no
+      register: final_cockpit_status
+
+    - name: Get Cockpit service status for display
+      command: systemctl is-active cockpit.socket
+      register: cockpit_active_check
+      changed_when: false
+      failed_when: false
+
+    - name: Check if UFW rules were applied
+      block:
+        - name: Verify Cockpit rules in UFW
+          command: "ufw status | grep -E '{{ cockpit_port }}'"
+          register: cockpit_ufw_check
+          changed_when: false
+          failed_when: false
+
+        - name: UFW rule verification
+          debug:
+            msg: "{{ '✓ Cockpit UFW rules verified' if cockpit_ufw_check.rc == 0 else 'ℹ UFW rules not found (UFW may not be active)' }}"
+
+      rescue:
+        - name: Rule verification failed
+          debug:
+            msg: "ℹ Could not verify UFW rules"
+
+    - name: Display completion summary
+      debug:
+        msg: |
+          Cockpit Installation Complete!
+          ═══════════════════════════════════════════════════════════
+          Status: {{ '✓ Active' if cockpit_active_check.stdout == 'active' else '⚠ Check status manually' }}
+          Port: {{ cockpit_port }}
+          
+          Access Cockpit Web Console:
+          https://{{ ansible_default_ipv4.address }}:{{ cockpit_port }}
+          
+          Login Credentials:
+          - Use your system username and password
+          - For user '{{ ansible_user }}': use your SSH password
+          
+          Firewall Access:
+          {% for rule in cockpit_rules %}
+          - {{ rule.from }} → port {{ rule.port }}
+          {% endfor %}
+          
+          Useful Commands:
+          - sudo systemctl status cockpit.socket   (check service status)
+          - sudo systemctl restart cockpit.socket  (restart Cockpit)
+          - sudo ufw status                        (check firewall rules)
+          - journalctl -u cockpit                  (view Cockpit logs)
+          
+          Features Available:
+          - System monitoring and metrics
+          - Service management
+          - User account management
+          - Network configuration
+          - Storage management
+          - Terminal access
+          - Log viewer
+          
+          ⚠ SECURITY NOTE:
+          Cockpit uses HTTPS with a self-signed certificate.
+          Your browser will show a security warning - this is expected.
+          ═══════════════════════════════════════════════════════════
+      notify: Display Cockpit status
+
+    - name: Test Cockpit accessibility
+      block:
+        - name: Test Cockpit port accessibility
+          wait_for:
+            port: "{{ cockpit_port }}"
+            timeout: 5
+          ignore_errors: yes
+          register: cockpit_test
+
+        - name: Cockpit accessibility status
+          debug:
+            msg: "{{ '✓ Cockpit port is accessible' if cockpit_test.state == 'started' else '⚠ Cockpit port test inconclusive' }}"
+
+      rescue:
+        - name: Accessibility test warning
+          debug:
+            msg: "ℹ Cockpit accessibility test skipped or inconclusive. Try accessing via browser."
