@@ -21,8 +21,9 @@
     - name: Verify system compatibility
       assert:
         that:
-          - ansible_os_family == "Debian"
-        fail_msg: "This playbook requires a Debian-based system"
+          - ansible_distribution == "Debian"
+          - ansible_distribution_version is version('13', '>=')
+        fail_msg: "This playbook requires Debian 13 or later"
 
     - name: Check if user exists
       getent:
@@ -164,7 +165,7 @@
           ═══════════════════════════════════════════════════════════
       notify: Display setup instructions
 
-    - name: Optional: Create initial ZSH config if missing
+    - name: "Optional: Create initial ZSH config if missing"
       block:
         - name: Check if .zshrc exists
           stat:

@@ -44,9 +44,9 @@
     - name: Verify system compatibility
       assert:
         that:
-          - ansible_os_family == "Debian"
-          - ansible_distribution_version is version('18.04', '>=')
-        fail_msg: "This playbook requires Debian/Ubuntu 18.04 or later"
+          - ansible_distribution == "Debian"
+          - ansible_distribution_version is version('13', '>=')
+        fail_msg: "This playbook requires Debian 13 or later"
 
     - name: Display system information
       debug:
@@ -64,6 +64,30 @@
         cache_valid_time: 3600
       register: apt_update
       changed_when: apt_update.cache_updated
+
+    - name: Check for already installed tools
+      block:
+        - name: Check which core tools are already installed
+          command: "dpkg-query -W -f='${Package}\n' {{ item }}"
+          loop: "{{ all_tools }}"
+          register: package_check
+          changed_when: false
+          failed_when: false
+          check_mode: no
+
+        - name: Count already installed packages
+          set_fact:
+            already_installed_count: "{{ package_check.results | selectattr('rc', 'equalto', 0) | list | length }}"
+            total_packages: "{{ all_tools | length }}"
+
+        - name: Display pre-installation status
+          debug:
+            msg: |
+              Pre-installation Analysis:
+              ══════════════════════════════════════════════════════
+              Already installed: {{ already_installed_count }}/{{ total_packages }}
+              Packages to install: {{ total_packages | int - already_installed_count | int }}
+              ══════════════════════════════════════════════════════
 
     - name: Install core system tools
       apt:
@@ -140,11 +164,21 @@
           changed_when: false
           failed_when: false
 
+        - name: Count successful tool checks
+          set_fact:
+            successful_tools: "{{ tool_check.results | selectattr('rc', 'equalto', 0) | list | length }}"
+            total_tools: "{{ core_tools[:5] | length }}"
+
         - name: Installation verification complete
           debug:
-            msg: "✓ All core tools verified and ready to use"
-          when: tool_check.rc == 0
+            msg: "✓ All core tools verified and ready to use ({{ successful_tools }}/{{ total_tools }} found)"
+          when: successful_tools | int == total_tools | int
           notify: Display installation summary
+
+        - name: Installation verification partial
+          debug:
+            msg: "⚠ {{ successful_tools }}/{{ total_tools }} core tools found. Some tools may not be installed."
+          when: successful_tools | int < total_tools | int
 
       rescue:
         - name: Installation verification warning

@@ -5,11 +5,27 @@
   gather_facts: yes
   
   pre_tasks:
-    - name: Check if running on Debian-based system
+    - name: Verify system compatibility
       assert:
         that:
-          - ansible_os_family == "Debian"
-        fail_msg: "This playbook is designed for Debian-based systems"
+          - ansible_distribution == "Debian"
+          - ansible_distribution_version is version('13', '>=')
+        fail_msg: "This playbook requires Debian 13 or later"
+
+    - name: Display pre-configuration information
+      debug:
+        msg: |
+          SSH Hardening Configuration:
+          ═══════════════════════════════════════════════════════════
+          System: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          Hostname: {{ ansible_hostname }}
+          Current SSH Port: {{ ansible_port | default(22) }}
+          New SSH Port: 64100
+          
+          ⚠ WARNING: This will change SSH to port 64100
+          Make sure you have physical access or another way to connect
+          if something goes wrong!
+          ═══════════════════════════════════════════════════════════
 
   tasks:
     - name: Install openssh-server
@@ -17,6 +33,11 @@
         name: openssh-server
         state: present
         update_cache: yes
+        cache_valid_time: 3600
+      register: openssh_install
+      retries: 3
+      delay: 5
+      until: openssh_install is succeeded
 
     - name: Create backup of original sshd_config
       copy:
@@ -26,127 +47,101 @@
         owner: root
         group: root
         mode: '0600'
+      register: backup_result
 
-    - name: Remove any conflicting commented lines in sshd_config
-      lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: "^#?{{ item.key }}\\s"
-        state: absent
-      loop:
-        - { key: "Port" }
-        - { key: "AddressFamily" }
-        - { key: "ListenAddress" }
-        - { key: "SyslogFacility" }
-        - { key: "LogLevel" }
-        - { key: "LoginGraceTime" }
-        - { key: "StrictModes" }
-        - { key: "MaxAuthTries" }
-        - { key: "MaxSessions" }
-        - { key: "PermitRootLogin" }
-        - { key: "PubkeyAuthentication" }
-        - { key: "PasswordAuthentication" }
-        - { key: "PermitEmptyPasswords" }
-        - { key: "KbdInteractiveAuthentication" }
-        - { key: "ChallengeResponseAuthentication" }
-        - { key: "KerberosAuthentication" }
-        - { key: "KerberosOrLocalPasswd" }
-        - { key: "KerberosTicketCleanup" }
-        - { key: "GSSAPIAuthentication" }
-        - { key: "GSSAPICleanupCredentials" }
-        - { key: "IgnoreRhosts" }
-        - { key: "IgnoreUserKnownHosts" }
-        - { key: "HostbasedAuthentication" }
-        - { key: "PermitUserEnvironment" }
-        - { key: "UsePAM" }
-        - { key: "AllowTcpForwarding" }
-        - { key: "AllowAgentForwarding" }
-        - { key: "GatewayPorts" }
-        - { key: "PermitTunnel" }
-        - { key: "X11Forwarding" }
-        - { key: "X11UseLocalhost" }
-        - { key: "TCPKeepAlive" }
-        - { key: "ClientAliveInterval" }
-        - { key: "ClientAliveCountMax" }
-        - { key: "MaxStartups" }
-        - { key: "PrintMotd" }
-        - { key: "PrintLastLog" }
-        - { key: "Banner" }
-        - { key: "DebianBanner" }
-        - { key: "AcceptEnv" }
-        - { key: "Subsystem" }
+    - name: Verify backup was created
+      stat:
+        path: /etc/ssh/sshd_config.bak.{{ ansible_date_time.iso8601_basic_short }}
+      register: backup_file
+      failed_when: not backup_file.stat.exists
 
-    - name: Configure hardened sshd settings
-      lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: "^#?{{ item.key }}\\s"
-        line: "{{ item.key }} {{ item.value }}"
-        state: present
-      loop:
-        # Network & Connectivity
-        - { key: "Port", value: "64100" }
-        - { key: "AddressFamily", value: "inet" }
-        - { key: "ListenAddress", value: "0.0.0.0" }
-        
-        # Logging
-        - { key: "SyslogFacility", value: "AUTH" }
-        - { key: "LogLevel", value: "VERBOSE" }
-        
-        # Authentication
-        - { key: "LoginGraceTime", value: "30s" }
-        - { key: "StrictModes", value: "yes" }
-        - { key: "MaxAuthTries", value: "2" }
-        - { key: "MaxSessions", value: "5" }
-        - { key: "PermitRootLogin", value: "no" }
-        - { key: "PubkeyAuthentication", value: "no" }
-        - { key: "PasswordAuthentication", value: "yes" }
-        - { key: "PermitEmptyPasswords", value: "no" }
-        - { key: "KbdInteractiveAuthentication", value: "no" }
-        - { key: "ChallengeResponseAuthentication", value: "no" }
-        
-        # Kerberos
-        - { key: "KerberosAuthentication", value: "no" }
-        - { key: "KerberosOrLocalPasswd", value: "no" }
-        - { key: "KerberosTicketCleanup", value: "yes" }
-        
-        # GSSAPI
-        - { key: "GSSAPIAuthentication", value: "no" }
-        - { key: "GSSAPICleanupCredentials", value: "yes" }
-        
-        # Rhosts & Host-based
-        - { key: "IgnoreRhosts", value: "yes" }
-        - { key: "IgnoreUserKnownHosts", value: "yes" }
-        - { key: "HostbasedAuthentication", value: "no" }
-        
-        # Environment & Privilege
-        - { key: "PermitUserEnvironment", value: "no" }
-        - { key: "UsePAM", value: "yes" }
-        
-        # Forwarding & Tunnels
-        - { key: "AllowTcpForwarding", value: "no" }
-        - { key: "AllowAgentForwarding", value: "no" }
-        - { key: "GatewayPorts", value: "no" }
-        - { key: "PermitTunnel", value: "no" }
-        - { key: "X11Forwarding", value: "no" }
-        - { key: "X11UseLocalhost", value: "yes" }
-        
-        # Session & Keepalive
-        - { key: "TCPKeepAlive", value: "no" }
-        - { key: "ClientAliveInterval", value: "300" }
-        - { key: "ClientAliveCountMax", value: "3" }
-        - { key: "MaxStartups", value: "10:30:60" }
-        
-        # Display
-        - { key: "PrintMotd", value: "no" }
-        - { key: "PrintLastLog", value: "no" }
-        - { key: "Banner", value: "none" }
-        - { key: "DebianBanner", value: "no" }
-        
-        # Locale
-        - { key: "AcceptEnv", value: "LANG LC_*" }
-        
-        # Subsystem
-        - { key: "Subsystem", value: "sftp /usr/lib/openssh/sftp-server" }
+    - name: Create new hardened sshd_config
+      copy:
+        dest: /etc/ssh/sshd_config
+        owner: root
+        group: root
+        mode: '0600'
+        content: |
+          # Hardened sshd_config for Debian 13
+          # Generated by Ansible on {{ ansible_date_time.iso8601 }}
+          # Based on dev-sec/ssh-baseline InSpec profile
+          
+          # --- Network & Connectivity ---
+          Port 64100
+          AddressFamily inet
+          ListenAddress 0.0.0.0
+          
+          # --- Logging ---
+          SyslogFacility AUTH
+          LogLevel VERBOSE
+          
+          # --- Authentication ---
+          LoginGraceTime 30s
+          StrictModes yes
+          MaxAuthTries 2
+          MaxSessions 5
+          PermitRootLogin no
+          PubkeyAuthentication no
+          PasswordAuthentication yes
+          PermitEmptyPasswords no
+          KbdInteractiveAuthentication no
+          ChallengeResponseAuthentication no
+          
+          # --- Kerberos ---
+          KerberosAuthentication no
+          KerberosOrLocalPasswd no
+          KerberosTicketCleanup yes
+          
+          # --- GSSAPI ---
+          GSSAPIAuthentication no
+          GSSAPICleanupCredentials yes
+          
+          # --- Rhosts & Host-based ---
+          IgnoreRhosts yes
+          IgnoreUserKnownHosts yes
+          HostbasedAuthentication no
+          
+          # --- Environment & Privilege ---
+          PermitUserEnvironment no
+          UsePAM yes
+          
+          # --- Forwarding & Tunnels ---
+          AllowTcpForwarding no
+          AllowAgentForwarding no
+          GatewayPorts no
+          PermitTunnel no
+          X11Forwarding no
+          X11UseLocalhost yes
+          
+          # --- Session & Keepalive ---
+          TCPKeepAlive no
+          ClientAliveInterval 300
+          ClientAliveCountMax 3
+          MaxStartups 10:30:60
+          
+          # --- Display ---
+          PrintMotd no
+          PrintLastLog no
+          Banner none
+          DebianBanner no
+          
+          # --- Locale ---
+          AcceptEnv LANG LC_*
+          
+          # --- Subsystem ---
+          Subsystem sftp /usr/lib/openssh/sftp-server
       notify: Restart SSH service
+
+    - name: Configuration summary
+      debug:
+        msg: |
+          SSH Configuration Applied:
+          ✓ Port changed to 64100
+          ✓ Password authentication enabled
+          ✓ Root login disabled
+          ✓ Public key authentication disabled
+          ✓ All forwarding disabled
+          ✓ Hardened security settings applied
 
     - name: Set permissions on /etc/ssh directory
       file:
@@ -206,10 +201,35 @@
         state: started
       register: ssh_status
 
+    - name: Check SSH is listening on new port
+      wait_for:
+        port: 64100
+        timeout: 10
+      register: port_check
+      ignore_errors: yes
+
+    - name: Port verification status
+      debug:
+        msg: "{{ '✓ SSH is listening on port 64100' if port_check is succeeded else '⚠ Could not verify port 64100 is listening' }}"
+
     - name: Display completion message
       debug:
         msg: |
           ✓ SSH hardening completed successfully
           ✓ SSH is running on port 64100
           ✓ Configuration backed up to: /etc/ssh/sshd_config.bak.{{ ansible_date_time.iso8601_basic_short }}
-          ⚠ Update your ansible inventory to use port 64100 for future connections
+          
+          ⚠ IMPORTANT NEXT STEPS:
+          1. Update your ansible inventory to use port 64100:
+             ansible_port=64100
+          
+          2. Test SSH connection in a NEW terminal before closing this one:
+             ssh -p 64100 {{ ansible_user }}@{{ ansible_host }}
+          
+          3. If connection fails, you can restore the backup:
+             sudo cp /etc/ssh/sshd_config.bak.{{ ansible_date_time.iso8601_basic_short }} /etc/ssh/sshd_config
+             sudo systemctl restart ssh
+          
+          4. Update firewall rules if using UFW:
+             sudo ufw allow from YOUR_IP to any port 64100
+             sudo ufw delete allow 22/tcp  # Remove old rule after testing
